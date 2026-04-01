@@ -7,11 +7,11 @@ const { R } = require("redbean-node");
 const { log, isDev } = require("../src/util");
 const Database = require("./database");
 const util = require("util");
+const { CacheableDnsHttpAgent } = require("./cacheable-dns-http-agent");
 const { Settings } = require("./settings");
 const dayjs = require("dayjs");
 const childProcessAsync = require("promisify-child-process");
 const path = require("path");
-const axios = require("axios");
 const { isSSL, sslKey, sslCert, sslKeyPassphrase } = require("./config");
 // DO NOT IMPORT HERE IF THE MODULES USED `UptimeKumaServer.getInstance()`, put at the bottom of this file instead.
 
@@ -21,7 +21,7 @@ const { isSSL, sslKey, sslCert, sslKeyPassphrase } = require("./config");
  */
 class UptimeKumaServer {
     /**
-     * Current server instance
+     *
      * @type {UptimeKumaServer}
      */
     static instance = null;
@@ -50,9 +50,12 @@ class UptimeKumaServer {
     indexHTML = "";
 
     /**
+     *
      * @type {{}}
      */
-    static monitorTypeList = {};
+    static monitorTypeList = {
+
+    };
 
     /**
      * Use for decode the auth object
@@ -60,11 +63,6 @@ class UptimeKumaServer {
      */
     jwtSecret = null;
 
-    /**
-     * Get the current instance of the server if it exists, otherwise
-     * create a new instance.
-     * @returns {UptimeKumaServer} Server instance
-     */
     static getInstance() {
         if (UptimeKumaServer.instance == null) {
             UptimeKumaServer.instance = new UptimeKumaServer();
@@ -72,28 +70,16 @@ class UptimeKumaServer {
         return UptimeKumaServer.instance;
     }
 
-    /**
-     *
-     */
     constructor() {
-        // Set axios default user-agent to Uptime-Kuma/version
-        axios.defaults.headers.common["User-Agent"] = this.getUserAgent();
-
-        // Set default axios timeout to 5 minutes instead of infinity
-        axios.defaults.timeout = 300 * 1000;
-
         log.info("server", "Creating express and socket.io instance");
         this.app = express();
         if (isSSL) {
             log.info("server", "Server Type: HTTPS");
-            this.httpServer = https.createServer(
-                {
-                    key: fs.readFileSync(sslKey),
-                    cert: fs.readFileSync(sslCert),
-                    passphrase: sslKeyPassphrase,
-                },
-                this.app
-            );
+            this.httpServer = https.createServer({
+                key: fs.readFileSync(sslKey),
+                cert: fs.readFileSync(sslCert),
+                passphrase: sslKeyPassphrase,
+            }, this.app);
         } else {
             log.info("server", "Server Type: HTTP");
             this.httpServer = http.createServer(this.app);
@@ -112,26 +98,7 @@ class UptimeKumaServer {
         // Set Monitor Types
         UptimeKumaServer.monitorTypeList["real-browser"] = new RealBrowserMonitorType();
         UptimeKumaServer.monitorTypeList["tailscale-ping"] = new TailscalePing();
-        UptimeKumaServer.monitorTypeList["websocket-upgrade"] = new WebSocketMonitorType();
-        UptimeKumaServer.monitorTypeList["dns"] = new DnsMonitorType();
-        UptimeKumaServer.monitorTypeList["postgres"] = new PostgresMonitorType();
-        UptimeKumaServer.monitorTypeList["mqtt"] = new MqttMonitorType();
-        UptimeKumaServer.monitorTypeList["smtp"] = new SMTPMonitorType();
-        UptimeKumaServer.monitorTypeList["group"] = new GroupMonitorType();
-        UptimeKumaServer.monitorTypeList["snmp"] = new SNMPMonitorType();
-        UptimeKumaServer.monitorTypeList["grpc-keyword"] = new GrpcKeywordMonitorType();
-        UptimeKumaServer.monitorTypeList["mongodb"] = new MongodbMonitorType();
-        UptimeKumaServer.monitorTypeList["rabbitmq"] = new RabbitMqMonitorType();
-        UptimeKumaServer.monitorTypeList["sip-options"] = new SIPMonitorType();
-        UptimeKumaServer.monitorTypeList["gamedig"] = new GameDigMonitorType();
-        UptimeKumaServer.monitorTypeList["port"] = new TCPMonitorType();
-        UptimeKumaServer.monitorTypeList["manual"] = new ManualMonitorType();
-        UptimeKumaServer.monitorTypeList["globalping"] = new GlobalpingMonitorType(this.getUserAgent());
-        UptimeKumaServer.monitorTypeList["redis"] = new RedisMonitorType();
-        UptimeKumaServer.monitorTypeList["system-service"] = new SystemServiceMonitorType();
-        UptimeKumaServer.monitorTypeList["sqlserver"] = new MssqlMonitorType();
-        UptimeKumaServer.monitorTypeList["mysql"] = new MysqlMonitorType();
-        UptimeKumaServer.monitorTypeList["oracledb"] = new OracleDbMonitorType();
+        UptimeKumaServer.monitorTypeList["ssh"] = new SSHMonitorType();
 
         // Allow all CORS origins (polling) in development
         let cors = undefined;
@@ -191,17 +158,16 @@ class UptimeKumaServer {
                         }
                     }
                 }
-            },
+            }
         });
     }
 
-    /**
-     * Initialise app after the database has been set up
-     * @returns {Promise<void>}
-     */
+    /** Initialise app after the database has been set up */
     async initAfterDatabaseReady() {
         // Static
         this.app.use("/screenshots", express.static(Database.screenshotDir));
+
+        await CacheableDnsHttpAgent.update();
 
         process.env.TZ = await this.getTimezone();
         dayjs.tz.setDefault(process.env.TZ);
@@ -213,8 +179,8 @@ class UptimeKumaServer {
 
     /**
      * Send list of monitors to client
-     * @param {Socket} socket Socket to send list on
-     * @returns {Promise<object>} List of monitors
+     * @param {Socket} socket
+     * @returns {Object} List of monitors
      */
     async sendMonitorList(socket) {
         let list = await this.getMonitorJSONList(socket.userID);
@@ -223,63 +189,30 @@ class UptimeKumaServer {
     }
 
     /**
-     * Update Monitor into list
-     * @param {Socket} socket Socket to send list on
-     * @param {number} monitorID update or deleted monitor id
-     * @returns {Promise<void>}
-     */
-    async sendUpdateMonitorIntoList(socket, monitorID) {
-        let list = await this.getMonitorJSONList(socket.userID, monitorID);
-        if (list && list[monitorID]) {
-            this.io.to(socket.userID).emit("updateMonitorIntoList", list);
-        }
-    }
-
-    /**
-     * Delete Monitor from list
-     * @param {Socket} socket Socket to send list on
-     * @param {number} monitorID update or deleted monitor id
-     * @returns {Promise<void>}
-     */
-    async sendDeleteMonitorFromList(socket, monitorID) {
-        this.io.to(socket.userID).emit("deleteMonitorFromList", monitorID);
-    }
-
-    /**
      * Get a list of monitors for the given user.
      * @param {string} userID - The ID of the user to get monitors for.
-     * @param {number} monitorID - The ID of monitor for.
-     * @returns {Promise<object>} A promise that resolves to an object with monitor IDs as keys and monitor objects as values.
+     * @returns {Promise<Object>} A promise that resolves to an object with monitor IDs as keys and monitor objects as values.
      *
      * Generated by Trelent
      */
-    async getMonitorJSONList(userID, monitorID = null) {
-        let query = " user_id = ? ";
-        let queryParams = [userID];
+    async getMonitorJSONList(userID) {
+        let result = {};
 
-        if (monitorID) {
-            query += "AND id = ? ";
-            queryParams.push(monitorID);
+        let monitorList = await R.find("monitor", " user_id = ? ORDER BY weight DESC, name", [
+            userID,
+        ]);
+
+        for (let monitor of monitorList) {
+            result[monitor.id] = await monitor.toJSON();
         }
 
-        let monitorList = await R.find("monitor", query + "ORDER BY weight DESC, name", queryParams);
-
-        const monitorData = monitorList.map((monitor) => ({
-            id: monitor.id,
-            active: monitor.active,
-            name: monitor.name,
-        }));
-        const preloadData = await Monitor.preparePreloadData(monitorData);
-
-        const result = {};
-        monitorList.forEach((monitor) => (result[monitor.id] = monitor.toJSON(preloadData)));
         return result;
     }
 
     /**
      * Send maintenance list to client
      * @param {Socket} socket Socket.io instance to send to
-     * @returns {Promise<object>} Maintenance list
+     * @returns {Object}
      */
     async sendMaintenanceList(socket) {
         return await this.sendMaintenanceListByUserID(socket.userID);
@@ -287,8 +220,8 @@ class UptimeKumaServer {
 
     /**
      * Send list of maintenances to user
-     * @param {number} userID User to send list to
-     * @returns {Promise<object>} Maintenance list
+     * @param {number} userID
+     * @returns {Object}
      */
     async sendMaintenanceListByUserID(userID) {
         let list = await this.getMaintenanceJSONList(userID);
@@ -299,7 +232,7 @@ class UptimeKumaServer {
     /**
      * Get a list of maintenances for the given user.
      * @param {string} userID - The ID of the user to get maintenances for.
-     * @returns {Promise<object>} A promise that resolves to an object with maintenance IDs as keys and maintenances objects as values.
+     * @returns {Promise<Object>} A promise that resolves to an object with maintenance IDs as keys and maintenances objects as values.
      */
     async getMaintenanceJSONList(userID) {
         let result = {};
@@ -311,11 +244,13 @@ class UptimeKumaServer {
 
     /**
      * Load maintenance list and run
-     * @param {any} userID Unused
+     * @param userID
      * @returns {Promise<void>}
      */
     async loadMaintenanceList(userID) {
-        let maintenanceList = await R.findAll("maintenance", " ORDER BY end_date DESC, title", []);
+        let maintenanceList = await R.findAll("maintenance", " ORDER BY end_date DESC, title", [
+
+        ]);
 
         for (let maintenance of maintenanceList) {
             this.maintenanceList[maintenance.id] = maintenance;
@@ -323,11 +258,6 @@ class UptimeKumaServer {
         }
     }
 
-    /**
-     * Retrieve a specific maintenance
-     * @param {number} maintenanceID ID of maintenance to retrieve
-     * @returns {(object|null)} Maintenance if it exists
-     */
     getMaintenance(maintenanceID) {
         if (this.maintenanceList[maintenanceID]) {
             return this.maintenanceList[maintenanceID];
@@ -339,11 +269,10 @@ class UptimeKumaServer {
      * Write error to log file
      * @param {any} error The error to write
      * @param {boolean} outputToConsole Should the error also be output to console?
-     * @returns {void}
      */
     static errorLog(error, outputToConsole = true) {
         const errorLogStream = fs.createWriteStream(path.join(Database.dataDir, "/error.log"), {
-            flags: "a",
+            flags: "a"
         });
 
         errorLogStream.on("error", () => {
@@ -364,17 +293,18 @@ class UptimeKumaServer {
 
     /**
      * Get the IP of the client connected to the socket
-     * @param {Socket} socket Socket to query
-     * @returns {Promise<string>} IP of client
+     * @param {Socket} socket
+     * @returns {Promise<string>}
      */
     getClientIP(socket) {
         return this.getClientIPwithProxy(socket.client.conn.remoteAddress, socket.client.conn.request.headers);
     }
 
     /**
-     * @param {string} clientIP Raw client IP
-     * @param {IncomingHttpHeaders} headers HTTP headers
-     * @returns {Promise<string>} Client IP with proxy (if trusted)
+     *
+     * @param {string} clientIP
+     * @param {IncomingHttpHeaders} headers
+     * @returns {Promise<string>}
      */
     async getClientIPwithProxy(clientIP, headers) {
         if (clientIP === undefined) {
@@ -384,11 +314,9 @@ class UptimeKumaServer {
         if (await Settings.get("trustProxy")) {
             const forwardedFor = headers["x-forwarded-for"];
 
-            return (
-                (typeof forwardedFor === "string" ? forwardedFor.split(",")[0].trim() : null) ||
-                headers["x-real-ip"] ||
-                clientIP.replace(/^::ffff:/, "")
-            );
+            return (typeof forwardedFor === "string" ? forwardedFor.split(",")[0].trim() : null)
+                || headers["x-real-ip"]
+                || clientIP.replace(/^::ffff:/, "");
         } else {
             return clientIP.replace(/^::ffff:/, "");
         }
@@ -398,7 +326,7 @@ class UptimeKumaServer {
      * Attempt to get the current server timezone
      * If this fails, fall back to environment variables and then make a
      * guess.
-     * @returns {Promise<string>} Current timezone
+     * @returns {Promise<string>}
      */
     async getTimezone() {
         // From process.env.TZ
@@ -443,7 +371,7 @@ class UptimeKumaServer {
 
     /**
      * Get the current offset
-     * @returns {string} Time offset
+     * @returns {string}
      */
     getTimezoneOffset() {
         return dayjs().format("Z");
@@ -451,9 +379,7 @@ class UptimeKumaServer {
 
     /**
      * Throw an error if the timezone is invalid
-     * @param {string} timezone Timezone to test
-     * @returns {void}
-     * @throws The timezone is invalid
+     * @param timezone
      */
     checkTimezone(timezone) {
         try {
@@ -465,8 +391,7 @@ class UptimeKumaServer {
 
     /**
      * Set the current server timezone and environment variables
-     * @param {string} timezone Timezone to set
-     * @returns {Promise<void>}
+     * @param {string} timezone
      */
     async setTimezone(timezone) {
         this.checkTimezone(timezone);
@@ -502,7 +427,6 @@ class UptimeKumaServer {
     /**
      * Start all system services (e.g. nscd)
      * For now, only used in Docker
-     * @returns {void}
      */
     async startNSCDServices() {
         if (process.env.UPTIME_KUMA_IS_CONTAINER) {
@@ -517,7 +441,6 @@ class UptimeKumaServer {
 
     /**
      * Stop all system services
-     * @returns {void}
      */
     async stopNSCDServices() {
         if (process.env.UPTIME_KUMA_IS_CONTAINER) {
@@ -531,19 +454,10 @@ class UptimeKumaServer {
     }
 
     /**
-     * Default User-Agent when making HTTP requests
-     * @returns {string} User-Agent
-     */
-    getUserAgent() {
-        return "Uptime-Kuma/" + require("../package.json").version;
-    }
-
-    /**
      * Force connected sockets of a user to refresh and disconnect.
      * Used for resetting password.
-     * @param {string} userID User ID
-     * @param {string?} currentSocketID Current socket ID
-     * @returns {void}
+     * @param {string} userID
+     * @param {string?} currentSocketID
      */
     disconnectAllSocketClients(userID, currentSocketID = undefined) {
         for (const socket of this.io.sockets.sockets.values()) {
@@ -551,37 +465,19 @@ class UptimeKumaServer {
                 try {
                     socket.emit("refresh");
                     socket.disconnect();
-                } catch (e) {}
+                } catch (e) {
+
+                }
             }
         }
     }
 }
 
 module.exports = {
-    UptimeKumaServer,
+    UptimeKumaServer
 };
 
 // Must be at the end to avoid circular dependencies
 const { RealBrowserMonitorType } = require("./monitor-types/real-browser-monitor-type");
 const { TailscalePing } = require("./monitor-types/tailscale-ping");
-const { WebSocketMonitorType } = require("./monitor-types/websocket-upgrade");
-const { DnsMonitorType } = require("./monitor-types/dns");
-const { PostgresMonitorType } = require("./monitor-types/postgres");
-const { MqttMonitorType } = require("./monitor-types/mqtt");
-const { SMTPMonitorType } = require("./monitor-types/smtp");
-const { GroupMonitorType } = require("./monitor-types/group");
-const { SNMPMonitorType } = require("./monitor-types/snmp");
-const { GrpcKeywordMonitorType } = require("./monitor-types/grpc");
-const { MongodbMonitorType } = require("./monitor-types/mongodb");
-const { RabbitMqMonitorType } = require("./monitor-types/rabbitmq");
-const { SIPMonitorType } = require("./monitor-types/sip-options");
-const { GameDigMonitorType } = require("./monitor-types/gamedig");
-const { TCPMonitorType } = require("./monitor-types/tcp.js");
-const { ManualMonitorType } = require("./monitor-types/manual");
-const { GlobalpingMonitorType } = require("./monitor-types/globalping");
-const { RedisMonitorType } = require("./monitor-types/redis");
-const { SystemServiceMonitorType } = require("./monitor-types/system-service");
-const { MssqlMonitorType } = require("./monitor-types/mssql");
-const { MysqlMonitorType } = require("./monitor-types/mysql");
-const { OracleDbMonitorType } = require("./monitor-types/oracledb");
-const Monitor = require("./model/monitor");
+const { SSHMonitorType } = require("./monitor-types/ssh-monitor-type");
