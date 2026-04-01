@@ -3,6 +3,7 @@
 const { MonitorType } = require("./monitor-type");
 const { UP } = require("../../src/util");
 const { Client } = require("ssh2");
+const { authenticator } = require("otplib");
 
 class SSHMonitorType extends MonitorType {
 
@@ -16,6 +17,8 @@ class SSHMonitorType extends MonitorType {
         const password   = monitor.basic_auth_pass;
         const privateKey = monitor.tlsKey;
         const authMethod = monitor.authMethod || "password";
+        const otpEnabled = monitor.sshOtpEnabled || false;
+        const otpSecret  = monitor.sshOtpSecret ? monitor.sshOtpSecret.trim() : "";
         const command    = monitor.databaseQuery ? monitor.databaseQuery.trim() : "";
         const expected   = monitor.expectedValue ? monitor.expectedValue.trim() : "";
         const timeout    = (monitor.timeout || 10) * 1000;
@@ -30,6 +33,10 @@ class SSHMonitorType extends MonitorType {
             }
         } else {
             if (!password) { throw new Error("SSH password is required"); }
+        }
+
+        if (otpEnabled && !otpSecret) {
+            throw new Error("SSH OTP secret is required when OTP is enabled");
         }
 
         await new Promise((resolve, reject) => {
@@ -98,8 +105,32 @@ class SSHMonitorType extends MonitorType {
             if (authMethod === "key") {
                 connectOptions.privateKey = privateKey;
                 if (password) { connectOptions.passphrase = password; }
+                if (otpEnabled) {
+                    // 私钥 + OTP：键盘交互补充 OTP
+                    connectOptions.tryKeyboard = true;
+                    conn.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
+                        const responses = prompts.map(() => authenticator.generate(otpSecret));
+                        finish(responses);
+                    });
+                }
             } else {
-                connectOptions.password = password;
+                if (otpEnabled) {
+                    // 密码 + OTP：键盘交互，第一个提示回密码，后续回 OTP
+                    connectOptions.tryKeyboard = true;
+                    let passwordSent = false;
+                    conn.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
+                        const responses = prompts.map(() => {
+                            if (!passwordSent) {
+                                passwordSent = true;
+                                return password;
+                            }
+                            return authenticator.generate(otpSecret);
+                        });
+                        finish(responses);
+                    });
+                } else {
+                    connectOptions.password = password;
+                }
             }
 
             conn.connect(connectOptions);

@@ -132,6 +132,25 @@
                                                  autocomplete="new-password"></HiddenInput>
                                 </div>
 
+                                <!-- OTP 开关（密码模式 + 私钥模式均可用） -->
+                                <div class="my-3">
+                                    <div class="form-check">
+                                        <input id="ssh-otp-enabled" class="form-check-input" type="checkbox"
+                                               v-model="monitor.sshOtpEnabled"
+                                               @change="if (!monitor.sshOtpEnabled) { monitor.sshOtpSecret = ''; }">
+                                        <label class="form-check-label" for="ssh-otp-enabled">
+                                            {{ $t("SSH Enable OTP") }}
+                                        </label>
+                                    </div>
+                                </div>
+                                <div v-if="monitor.sshOtpEnabled" class="my-3">
+                                    <label for="ssh-otp-secret" class="form-label">{{ $t("SSH OTP Secret") }}</label>
+                                    <HiddenInput id="ssh-otp-secret" v-model="monitor.sshOtpSecret"
+                                                 autocomplete="new-password"
+                                                 :placeholder="$t('SSH OTP Secret Placeholder')"></HiddenInput>
+                                    <div class="form-text">{{ $t("sshOtpDescription") }}</div>
+                                </div>
+
                                 <!-- 私钥认证 -->
                                 <template v-if="monitor.authMethod === 'key'">
                                     <div class="my-3">

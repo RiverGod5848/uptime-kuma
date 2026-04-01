@@ -833,5 +833,9 @@
     "SSH Key Passphrase": "Key Passphrase",
     "sshPassphraseDescription": "Leave empty if the private key has no passphrase.",
     "Upload Key File": "Upload Key File",
-    "SSH Key Has Passphrase": "Key is protected by passphrase"
+    "SSH Key Has Passphrase": "Key is protected by passphrase",
+    "SSH Enable OTP": "Enable OTP (keyboard-interactive)",
+    "SSH OTP Secret": "OTP Secret (Base32)",
+    "SSH OTP Secret Placeholder": "e.g. JBSWY3DPEHPK3PXP",
+    "sshOtpDescription": "TOTP secret from your authenticator app. Password is sent first, then OTP code."
 }
